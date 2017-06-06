@@ -3,15 +3,23 @@ package dockerpty
 import (
 	"errors"
 	"github.com/fgrehm/go-dockerpty/term"
-	"github.com/fsouza/go-dockerclient"
 	"io"
 	"os"
 	gosignal "os/signal"
 	"syscall"
 	"time"
+	"github.com/fsouza/go-dockerclient"
 )
 
-func Start(client *docker.Client, container *docker.Container, hostConfig *docker.HostConfig) (err error) {
+type DockerClient interface {
+	AttachToContainer(opts docker.AttachToContainerOptions) error
+	StartContainer(id string, hostConfig *docker.HostConfig) error
+	StartExec(id string, opts docker.StartExecOptions) error
+	ResizeContainerTTY(id string, height, width int) error
+	ResizeExecTTY(id string, height, width int) error
+}
+
+func Start(client DockerClient, container *docker.Container, hostConfig *docker.HostConfig) (err error) {
 	var (
 		terminalFd uintptr
 		oldState   *term.State
@@ -49,7 +57,7 @@ func Start(client *docker.Client, container *docker.Container, hostConfig *docke
 	return <-attachChan
 }
 
-func StartExec(client *docker.Client, exec *docker.Exec) (err error) {
+func StartExec(client DockerClient, exec *docker.Exec) (err error) {
 	var (
 		terminalFd uintptr
 		oldState   *term.State
@@ -81,7 +89,7 @@ func StartExec(client *docker.Client, exec *docker.Exec) (err error) {
 	return <-errorChan
 }
 
-func attachToContainer(client *docker.Client, containerID string, errorChan chan error) {
+func attachToContainer(client DockerClient, containerID string, errorChan chan error) {
 	r, w := io.Pipe()
 	go io.Copy(w, os.Stdin)
 	err := client.AttachToContainer(docker.AttachToContainerOptions{
@@ -98,7 +106,7 @@ func attachToContainer(client *docker.Client, containerID string, errorChan chan
 	errorChan <- err
 }
 
-func startExec(client *docker.Client, exec *docker.Exec, errorChan chan error) {
+func startExec(client DockerClient, exec *docker.Exec, errorChan chan error) {
 	err := client.StartExec(exec.ID, docker.StartExecOptions{
 		Detach:       false,
 		Tty:          true,
@@ -111,7 +119,7 @@ func startExec(client *docker.Client, exec *docker.Exec, errorChan chan error) {
 }
 
 // From https://github.com/docker/docker/blob/0d70706b4b6bf9d5a5daf46dd147ca71270d0ab7/api/client/utils.go#L222-L233
-func monitorTty(client *docker.Client, containerID string, terminalFd uintptr) {
+func monitorTty(client DockerClient, containerID string, terminalFd uintptr) {
 	resizeTty(client, containerID, terminalFd)
 
 	sigchan := make(chan os.Signal, 1)
@@ -124,7 +132,7 @@ func monitorTty(client *docker.Client, containerID string, terminalFd uintptr) {
 }
 
 // From https://github.com/docker/docker/blob/0d70706b4b6bf9d5a5daf46dd147ca71270d0ab7/api/client/utils.go#L222-L233
-func monitorExecTty(client *docker.Client, execID string, terminalFd uintptr) {
+func monitorExecTty(client DockerClient, execID string, terminalFd uintptr) {
 	// HACK: For some weird reason on Docker 1.4.1 this resize is being triggered
 	//       before the Exec instance is running resulting in an error on the
 	//       Docker server. So we wait a little bit before triggering this first
@@ -141,7 +149,7 @@ func monitorExecTty(client *docker.Client, execID string, terminalFd uintptr) {
 	}()
 }
 
-func resizeTty(client *docker.Client, containerID string, terminalFd uintptr) error {
+func resizeTty(client DockerClient, containerID string, terminalFd uintptr) error {
 	height, width := getTtySize(terminalFd)
 	if height == 0 && width == 0 {
 		return nil
@@ -149,7 +157,7 @@ func resizeTty(client *docker.Client, containerID string, terminalFd uintptr) er
 	return client.ResizeContainerTTY(containerID, height, width)
 }
 
-func resizeExecTty(client *docker.Client, containerID string, terminalFd uintptr) error {
+func resizeExecTty(client DockerClient, containerID string, terminalFd uintptr) error {
 	height, width := getTtySize(terminalFd)
 	if height == 0 && width == 0 {
 		return nil
